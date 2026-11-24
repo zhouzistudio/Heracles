@@ -1,21 +1,66 @@
 pluginManagement {
-    val flutterSdkPath =
+    // ★ 2026-11-22：原来这里直接 `file("local.properties").inputStream()`，
+    //   在没有 local.properties 的机器上（干净的 checkout、CI、以及
+    //   **没有装 Flutter SDK 的手机**）会抛一个光秃秃的
+    //   `local.properties (No such file or directory)`，看不出要做什么。
+    //   现在按 local.properties → FLUTTER_ROOT → PATH 里的 flutter 依次找，
+    //   都找不到才报错，并把「怎么修」写进消息里。
+    val flutterSdkPath: String =
         run {
-            val properties = java.util.Properties()
-            file("local.properties").inputStream().use { properties.load(it) }
-            val flutterSdkPath = properties.getProperty("flutter.sdk")
-            require(flutterSdkPath != null) { "flutter.sdk not set in local.properties" }
-            flutterSdkPath
+            val fromLocalProperties =
+                file("local.properties")
+                    .takeIf { it.isFile }
+                    ?.let { f ->
+                        java.util.Properties()
+                            .apply { f.inputStream().use { load(it) } }
+                            .getProperty("flutter.sdk")
+                    }
+
+            val fromEnv = System.getenv("FLUTTER_ROOT")
+
+            // PATH 里找 flutter 可执行文件（软件包管理器装的 Flutter 常有这种情况）
+            val fromPath =
+                System.getenv("PATH")
+                    ?.split(java.io.File.pathSeparator)
+                    ?.map { java.io.File(it, "flutter") }
+                    ?.firstOrNull { it.isFile && it.canExecute() }
+                    ?.let { it.parentFile?.parentFile?.absolutePath }
+
+            sequenceOf(fromLocalProperties, fromEnv, fromPath)
+                .filterNotNull()
+                .firstOrNull { it.isNotBlank() && java.io.File(it).isDirectory }
+                ?: throw GradleException(
+                    """
+                    |找不到 Flutter SDK，本构建无法配置（这是 Flutter 宿主工程，不是纯 Android 工程）。
+                    |
+                    |我按这个顺序找过：
+                    |  1) app/android/local.properties 里的 flutter.sdk —— ${if (file("local.properties").exists()) "文件在，但没写 flutter.sdk 或路径无效" else "文件不存在"}
+                    |  2) 环境变量 FLUTTER_ROOT —— ${fromEnv ?: "未设置"}
+                    |  3) PATH 里的 flutter —— ${fromPath ?: "没找到"}
+                    |
+                    |怎么修（任选一条）：
+                    |  · 装了 Flutter：在 app/ 里跑 `flutter pub get`，它会自己生成 local.properties；
+                    |    或者手工写一行：flutter.sdk=/绝对路径/to/flutter
+                    |  · 没装 Flutter：本机编不出来。用云端编译：
+                    |    gh workflow run android-apk.yml --ref ci/android-apk
+                    |    （工作流见 .github/workflows/android-apk.yml，产物是 app-debug.apk）
+                    """.trimMargin(),
+                )
         }
 
     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
+        // ★ 2026-11-22：国内镜像优先。实测直连 Google Maven ≈1.5 MB/s、
+        //   Maven Central（Cloudflare）更慢；腾讯/阿里云镜像约 5 MB/s。
+        //   原仓库保留在最后兜底（镜像缺件时仍然能构建）。
+        maven("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/public")
+        maven("https://maven.aliyun.com/repository/gradle-plugin")
         google()
         mavenCentral()
         gradlePluginPortal()
-        // 国内镜像优先（本项目实测 21 MB/s）
-        maven("https://mirrors.cloud.tencent.com/nexus/repository/maven-public/")
     }
 }
 
