@@ -37,6 +37,7 @@ import com.theohowie.heracles.bridge.McpConfigBridge
 import com.theohowie.heracles.bridge.SandboxBridge
 import com.theohowie.heracles.bridge.SkillsBridge
 import com.theohowie.heracles.bridge.WorkspaceRegistry
+import com.theohowie.heracles.bridge.WorkspaceImporter
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.android.FlutterView
 import io.flutter.embedding.engine.FlutterEngine

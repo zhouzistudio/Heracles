@@ -188,7 +188,9 @@ class WorkspaceImporter(
                 if (cancelled) throw ImportCancelled()
                 val outFile = File(dest, f.rel)
                 outFile.parentFile?.mkdirs()
-                val input = context.contentResolver.openInputStream(f.uri)
+                // 回来的是 `Uri?`（SourceFile.uri 可空，导出时用的是 file）：
+                // 这里只走 SAF 来源，null 与「打不开」是同一种失败。
+                val input = f.uri?.let { context.contentResolver.openInputStream(it) }
                     ?: throw ImportFailed("读不到文件：${f.rel}")
                 input.use { ins ->
                     BufferedOutputStream(outFile.outputStream(), BUF).use { outs ->
