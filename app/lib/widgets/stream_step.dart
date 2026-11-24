@@ -396,6 +396,9 @@ class _StreamStepViewState extends State<StreamStepView> {
     // 纯正文轮（无思考通道）用文件图标，其余（分析 / 思考）用灯泡 ——
     // 与 _label 的「本轮输出」兜底判据一致
     final isOutput = step.reasoning.isEmpty && step.title == '本轮输出';
+    // ★ 行尾时间（2026-11-23 用户要求：「每次操作在对话后面加上当前的时间」）
+    //   11.23 12:10 —— 月.日 时:分，`null` 不画（老记录不编时间）。
+    final clock = hClockLabel(step.atMs);
     return ConstrainedBox(
       // 热区与工具行同高（≥ kMinTapTarget，`docs/25` §7）：
       // 一整行都可点，展开/收起不用瞄准小箭头。
@@ -462,6 +465,20 @@ class _StreamStepViewState extends State<StreamStepView> {
               )
             else
               const Spacer(),
+            // 行尾时间（2026-11-23）：与工具行同一位置、同一字号，
+            // 竖排一串动作时时间能对齐成一列，回看才扫得动。
+            if (clock.isNotEmpty) ...[
+              const SizedBox(width: HSpace.sm),
+              Text(
+                clock,
+                style: TextStyle(
+                  fontSize: 10.5,
+                  color: h.textFaint,
+                  // 等宽数字：分钟变化时整行不左右跳
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
             // （行尾展开箭头已退役 —— 2026-10-26 用户令，行仍可点开）
           ],
         ),

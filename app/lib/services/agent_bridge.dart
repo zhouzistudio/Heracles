@@ -441,6 +441,21 @@ class AgentBridge {
   static Stream<Map<String, dynamic>> get workspaceAdded =>
       _workspaceAddedCtl.stream;
 
+  /// **Kotlin → Dart：复制 / 导出进度**（2026-11-04）。
+  ///
+  /// 事件 `{done, total, current}`，`current` 是相对路径（可能为空）。
+  /// 广播流（页面重建不丢；`done == total` 的最后一帧通常紧跟着方法返回）。
+  static final StreamController<Map<String, dynamic>> _importProgressCtl =
+      StreamController<Map<String, dynamic>>.broadcast();
+  static final StreamController<Map<String, dynamic>> _exportProgressCtl =
+      StreamController<Map<String, dynamic>>.broadcast();
+
+  static Stream<Map<String, dynamic>> get importProgress =>
+      _importProgressCtl.stream;
+
+  static Stream<Map<String, dynamic>> get exportProgress =>
+      _exportProgressCtl.stream;
+
   void _installOpenSessionHandler() {
     if (_openHandlerInstalled) return;
     _openHandlerInstalled = true;
@@ -458,6 +473,16 @@ class AgentBridge {
             ? raw.cast<String, dynamic>()
             : const <String, dynamic>{};
         _workspaceAddedCtl.add(args);
+      } else if (call.method == 'workspaceImportProgress' ||
+          call.method == 'workspaceExportProgress') {
+        final raw = call.arguments;
+        final args = raw is Map
+            ? raw.cast<String, dynamic>()
+            : const <String, dynamic>{};
+        (call.method == 'workspaceImportProgress'
+                ? _importProgressCtl
+                : _exportProgressCtl)
+            .add(args);
       }
       return null;
     });
@@ -857,6 +882,87 @@ class AgentBridge {
       throw AgentBridgeException(e.message ?? e.code);
     } on MissingPluginException {
       throw const AgentBridgeException('桥接未就绪');
+    }
+  }
+
+  // ------------------------------------------------------------ 复制进私有目录 / 导出 zip
+  //
+  // ★ 2026-11-04：用户选的文件夹**不再直接当工作区**，而是复制一份到
+  //   `Android/data/<pkg>/files/workspaces/<名字>-<hash4>`。
+  //
+  // ## 为什么（真机证据，不是设计洁癖）
+  //
+  // SAF 给的只是 `content://` 授权，不是文件系统权限：
+  //
+  // | 谁 | 用户选的外部目录 | 私有副本 |
+  // |---|---|---|
+  // | Flutter / `File` | ✗ `EPERM` | ✓ |
+  // | 沙箱（proot Linux） | ✗ 挂不进去 | ✓ |
+  // | 终端 `run_command` | ✗ 没有 POSIX 路径 | ✓ |
+  //
+  // 结果就是：工作区指向外部目录时，沙箱和终端**永远**用不上它，所有 `fs.*`
+  // 都得绕 `DocumentFile`。复制一份之后它就是普通目录，三条链路一套代码。
+  //
+  // 代价（**UI 必须如实说**）：改的是副本，原文件夹不再同步；卸载 App 会连
+  // 副本一起删 ⇒ 所以有 [exportWorkspaceZip]。
+
+  /// **复制进私有目录并登记成工作区**（2026-11-04）。
+  ///
+  /// @param treeUri 选择器给的授权（[pickWorkspace] 返回的 `treeUri`）
+  /// @param sourcePath 原文件夹路径（做目录名后缀与「复制自」记录）
+  /// @param name 显示名（空则用目录名）
+  /// @param dropSource 成功后删掉**原文件夹那条登记**（默认 true：否则侧边栏
+  ///        同时出现原目录和副本两个工作区，用户不知道往哪个里干活）
+  /// @return Kotlin 的工作区条目（成功，形状同 [listWorkspaces]）；
+  ///         `ok:false` 的 Map（失败，带 `error` 人话）
+  Future<Map<String, dynamic>> importWorkspace({
+    required String treeUri,
+    required String sourcePath,
+    String name = '',
+    bool dropSource = true,
+  }) async {
+    try {
+      final m = await _channel.invokeMapMethod<String, dynamic>('importWorkspace', {
+        'treeUri': treeUri,
+        'sourcePath': sourcePath,
+        'name': name,
+        'dropSource': dropSource,
+      });
+      return m?.cast<String, dynamic>() ?? {'ok': false, 'error': '宿主没有回包'};
+    } on PlatformException catch (e) {
+      return {'ok': false, 'error': e.message ?? e.code};
+    } on MissingPluginException {
+      return {'ok': false, 'error': '桥接未就绪'};
+    }
+  }
+
+  /// 取消正在进行的复制（半成品目录由 Kotlin 删掉，不会留残骸）。
+  Future<void> cancelImport() async {
+    try {
+      await _channel.invokeMethod<bool>('cancelWorkspaceImport');
+    } on Object {
+      // 取消失败不改变任何状态：复制会自己跑完或自己失败
+    }
+  }
+
+  /// **把工作区打包成 zip** 放进 `<externalFilesDir>/exports/`。
+  ///
+  /// 这是"复制进私有目录"的**唯一出口**：副本删了就没了，用户要留一份
+  /// 就得导出。返回 `{ok:true, zipPath, name, files, bytes}` 或 `{ok:false, error}`。
+  Future<Map<String, dynamic>> exportWorkspaceZip({
+    required String path,
+    String name = '',
+  }) async {
+    try {
+      final m = await _channel.invokeMapMethod<String, dynamic>('exportWorkspaceZip', {
+        'path': path,
+        'name': name,
+      });
+      return m?.cast<String, dynamic>() ?? {'ok': false, 'error': '宿主没有回包'};
+    } on PlatformException catch (e) {
+      return {'ok': false, 'error': e.message ?? e.code};
+    } on MissingPluginException {
+      return {'ok': false, 'error': '桥接未就绪'};
     }
   }
 

@@ -104,6 +104,7 @@ abstract final class AppIcons {
   // ---- 顶栏 / 导航 ----
   static const refresh = CupertinoIcons.arrow_clockwise;
   static const menu = CupertinoIcons.line_horizontal_3;
+  static const more = CupertinoIcons.ellipsis;
   static const close = CupertinoIcons.xmark;
   static const back = CupertinoIcons.back;
 

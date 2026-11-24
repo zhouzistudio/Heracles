@@ -152,6 +152,7 @@ class WorkspaceDrawer extends StatefulWidget {
     this.onAddWorkspace,
     this.onAddAppWorkspace,
     this.onRemoveWorkspace,
+    this.onExportWorkspaceZip,
     this.onRenameSession,
     this.onDeleteSession,
     this.onToggleStar,
@@ -188,6 +189,13 @@ class WorkspaceDrawer extends StatefulWidget {
   final VoidCallback? onAddWorkspace;
   final VoidCallback? onAddAppWorkspace;
   final void Function(String workspaceId)? onRemoveWorkspace;
+
+  /// **把工作区打包成 zip 导出**（2026-11-04）。
+  ///
+  /// 工作区现在是 App 私有目录里的副本 ⇒ 卸载 App 就没了。这条是配套的
+  /// "拿走一份"：宿主负责弹进度、落地到 `exports/` 再告诉用户路径。
+  /// `null` = 宿主没接（旧版本），菜单里就不显示这一行。
+  final void Function(String workspaceId)? onExportWorkspaceZip;
   final void Function(String workspaceId, String sessionId)? onRenameSession;
   final void Function(String workspaceId, String sessionId)? onDeleteSession;
   final void Function(String workspaceId, String sessionId)? onToggleStar;
@@ -253,6 +261,7 @@ class _WorkspaceDrawerState extends State<WorkspaceDrawer> {
       onAddWorkspace: widget.onAddWorkspace,
       onAddAppWorkspace: widget.onAddAppWorkspace,
       onRemoveWorkspace: widget.onRemoveWorkspace,
+      onExportWorkspaceZip: widget.onExportWorkspaceZip,
       onRenameSession: widget.onRenameSession,
       onDeleteSession: widget.onDeleteSession,
       onToggleStar: widget.onToggleStar,
@@ -298,6 +307,7 @@ class _WorkspaceDrawerBody extends StatelessWidget {
     this.onAddWorkspace,
     this.onAddAppWorkspace,
     this.onRemoveWorkspace,
+    this.onExportWorkspaceZip,
     this.onRenameSession,
     this.onDeleteSession,
     this.onToggleStar,
@@ -351,6 +361,9 @@ class _WorkspaceDrawerBody extends StatelessWidget {
   final VoidCallback? onAddAppWorkspace;
 
   final void Function(String workspaceId)? onRemoveWorkspace;
+
+  /// 导出 zip 入口（见 [WorkspaceDrawer.onExportWorkspaceZip]）。
+  final void Function(String workspaceId)? onExportWorkspaceZip;
   final void Function(String workspaceId, String sessionId)? onRenameSession;
   final void Function(String workspaceId, String sessionId)? onDeleteSession;
   final void Function(String workspaceId, String sessionId)? onToggleStar;
@@ -613,6 +626,9 @@ class _WorkspaceDrawerBody extends StatelessWidget {
           onToggle: () => onToggleWorkspace?.call(w.id),
           onNewSession: () => onNewSession(w.id),
           onRemove: () => onRemoveWorkspace?.call(w.id),
+          onExport: onExportWorkspaceZip == null
+              ? null
+              : () => onExportWorkspaceZip!.call(w.id),
           onOpenFolder: onOpenFolder == null
               ? null
               : () => onOpenFolder!.call(w.id),
@@ -1741,6 +1757,7 @@ class _WorkspaceGroup extends StatelessWidget {
     required this.onToggle,
     required this.onNewSession,
     required this.onRemove,
+    this.onExport,
     required this.onSelectSession,
     required this.onRename,
     required this.onDelete,
@@ -1760,6 +1777,9 @@ class _WorkspaceGroup extends StatelessWidget {
   final VoidCallback onToggle;
   final VoidCallback onNewSession;
   final VoidCallback onRemove;
+
+  /// 打包导出这个工作区（`null` = 宿主没接，菜单里不显示）。
+  final VoidCallback? onExport;
   final void Function(String sessionId) onSelectSession;
   final void Function(String sessionId) onRename;
   final void Function(String sessionId) onDelete;
@@ -1991,6 +2011,20 @@ class _WorkspaceGroup extends StatelessWidget {
                   onNewSession();
                 },
               ),
+              // ★ 2026-11-04：工作区是 App 私有目录里的副本，卸载就没了。
+              //   「导出为 zip」是配套的出口，必须和「移除」放在一起，
+              //   否则用户没有把东西拿回系统的路。
+              if (onExport != null)
+                _bwMenuRow(
+                  h,
+                  icon: CupertinoIcons.archivebox,
+                  label: '导出源码 zip',
+                  subtitle: '打包一份，可从系统文件管理拿走',
+                  onTap: () {
+                    Navigator.of(ctx).pop();
+                    onExport!.call();
+                  },
+                ),
               _bwMenuRow(
                 h,
                 icon: CupertinoIcons.minus_circle_fill,

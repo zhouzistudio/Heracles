@@ -37,8 +37,17 @@ class WorkspaceRegistry(private val context: Context) {
      * @param path 设备上的**绝对 POSIX 路径**（对用户可见的那个）
      * @param name 显示名（缺省用目录名）
      * @param treeUri SAF 树 URI；空串 = 走 POSIX（App 自己写得到的目录）
+     * @param sourcePath **复制来源**（2026-11-04）：工作区现在是私有副本时，
+     *                   这里记着"用户当初选的那个文件夹"。空串 = 工作区本来就是
+     *                   那个目录本身（老登记 / 默认工作区）。
+     *                   UI 用它显示「复制自 …」，也用来提醒"原文件夹不再同步"。
      */
-    data class Entry(val path: String, val name: String, val treeUri: String) {
+    data class Entry(
+        val path: String,
+        val name: String,
+        val treeUri: String,
+        val sourcePath: String = "",
+    ) {
         val isSaf: Boolean get() = treeUri.isNotBlank()
         fun toMap(): Map<String, Any?> = mapOf(
             "id" to path,
@@ -46,6 +55,8 @@ class WorkspaceRegistry(private val context: Context) {
             "path" to path,
             "treeUri" to treeUri,
             "isSaf" to isSaf,
+            "sourcePath" to sourcePath,
+            "imported" to sourcePath.isNotBlank(),
         )
     }
 
@@ -93,6 +104,7 @@ class WorkspaceRegistry(private val context: Context) {
                 path = path,
                 name = o.optString("name").ifBlank { dirName },
                 treeUri = o.optString("treeUri"),
+                sourcePath = o.optString("sourcePath"),
             )
         }
         return out
@@ -131,13 +143,19 @@ class WorkspaceRegistry(private val context: Context) {
      *
      * @return 登记后的条目；`null` = 目录不存在且没有 SAF 授权（**不假装成功**）
      */
-    fun add(path: String, name: String, treeUri: String = ""): Map<String, Any?>? {
+    fun add(
+        path: String,
+        name: String,
+        treeUri: String = "",
+        sourcePath: String = "",
+    ): Map<String, Any?>? {
         val dir = File(path)
         if (treeUri.isBlank() && !dir.isDirectory) return null
         val entry = Entry(
             path = path,
             name = name.ifBlank { dir.name.ifBlank { path } },
             treeUri = treeUri,
+            sourcePath = sourcePath,
         )
         val all = list().filter { it.path != path } + entry
         save(all)
@@ -195,6 +213,9 @@ class WorkspaceRegistry(private val context: Context) {
                     put("path", e.path)
                     put("name", e.name)
                     put("treeUri", e.treeUri)
+                    // ★ 只增字段（2026-11-04）：老记录没有它 ⇒ `optString` 读成空串，
+                    //   语义就是"不是复制来的"，与旧行为一致。
+                    if (e.sourcePath.isNotBlank()) put("sourcePath", e.sourcePath)
                 }
             )
         }

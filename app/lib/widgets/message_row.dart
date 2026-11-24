@@ -126,6 +126,8 @@ class MessageRow extends StatelessWidget {
           running: running, failed: failed),
       detailLines: lines,
       initialExpanded: detail == StepDetail.fullyExpanded,
+      // 行尾时间（2026-11-23）：老记录没有 `atMs` ⇒ 空 ⇒ 不画
+      clock: hClockLabel(call.atMs),
     );
   }
 

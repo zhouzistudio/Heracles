@@ -550,12 +550,19 @@ class PlainToolLine extends StatefulWidget {
     required this.summary,
     this.detailLines = const [],
     this.initialExpanded = false,
+    this.clock = '',
   });
 
   final IconData icon;
   final String summary;
   final List<String> detailLines;
   final bool initialExpanded;
+
+  /// 行尾时间（`11.23 12:10`，2026-11-23 用户要求）。
+  ///
+  /// 空字符串 ⇒ 不画。由调用方格式化好再传（本文件不依赖
+  /// `models/message.dart`，`hClockLabel` 在那边）。
+  final String clock;
 
   @override
   State<PlainToolLine> createState() => _PlainToolLineState();
@@ -600,6 +607,18 @@ class _PlainToolLineState extends State<PlainToolLine> {
                 ),
               ),
               // （行尾展开箭头已退役 —— 2026-10-26 用户令）
+              // 行尾时间（2026-11-23）：与工具卡/步骤行同一位置、同一字号
+              if (widget.clock.isNotEmpty) ...[
+                const SizedBox(width: HSpace.sm),
+                Text(
+                  widget.clock,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: h.textFaint,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
             ],
               ),
             ),

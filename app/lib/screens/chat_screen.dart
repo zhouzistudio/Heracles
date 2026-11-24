@@ -1486,6 +1486,20 @@ class _ChatScreenState extends State<ChatScreen> {
         await _showPickWorkspaceFailure(ws);
         return;
       }
+      // ★★ 2026-11-04：选到的文件夹先**复制进私有目录**，再当工作区用。
+      //
+      // 为什么不能直接用：SAF 给的只是 `content://` 授权 —— Flutter 的 `File`、
+      // 沙箱（proot）和终端都碰不到它（`EPERM` / 挂不进去 / 没有 POSIX 路径）。
+      // 复制一份到 `Android/data/<pkg>/files/workspaces/` 之后，它就是个普通目录。
+      //
+      // 只在**拿到 treeUri** 时走这条路：`use_app_workspace`（默认工作区）
+      // 本来就在私有目录里，treeUri 为空 ⇒ 跳过，行为一字不变。
+      final treeUri = (ws['treeUri'] as String?) ?? '';
+      if (treeUri.isNotEmpty) {
+        final okImport = await _importPickedWorkspace(ws);
+        if (!mounted) return;
+        if (!okImport) return; // 失败原因已摆给用户，不切上下文
+      }
       // ★ 换工作区 = 换上下文 —— 必须让在途运行的结果失效，
       //   否则上一个工作区某会话的结果会串进新工作区的列表。
       _switchContext();
@@ -1520,6 +1534,214 @@ class _ChatScreenState extends State<ChatScreen> {
           },
         ],
       });
+    }
+  }
+
+  /// 跑一次**复制 / 打包**，把进度画在不可滑走的抽屉里（2026-11-04）。
+  ///
+  /// 抽出来是因为「复制工作区进来」和「导出 zip 出去」在 UI 上是同一件事：
+  /// 都几十秒没有原生反馈、都要显示 `done/total`、都要能取消。各写一遍
+  /// = 以后两处各修一遍。
+  ///
+  /// 抽屉**不可滑动关闭**（`isDismissible:false` + `enableDrag:false`）：
+  /// 关掉抽屉不等于取消操作，那才是真的会让人困惑 —— 取消走专门的按钮。
+  ///
+  /// @return 宿主回的原始 map（`{ok:..., ...}`）；[run] 抛错时向上抛。
+  Future<Map<String, dynamic>> _runTransferWithProgress({
+    required String title,
+    required String note,
+    required Stream<Map<String, dynamic>> progressStream,
+    required Future<Map<String, dynamic>> Function() run,
+    String? cancelLabel,
+    VoidCallback? onCancel,
+  }) async {
+    final progress = ValueNotifier<Map<String, dynamic>>(
+      const <String, dynamic>{'done': 0, 'total': 0, 'current': ''},
+    );
+    final sub = progressStream.listen((e) => progress.value = e);
+    BuildContext? sheetCtx;
+    unawaited(showModalBottomSheet<void>(
+      context: context,
+      isDismissible: false,
+      enableDrag: false,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        sheetCtx = ctx;
+        final h = Hue.of(ctx);
+        return BwSheetShell(
+          onDismissRequest: () {}, // 只能按取消按钮（若有）
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(
+                  HSpace.lg, HSpace.md, HSpace.lg, HSpace.md),
+              child: ValueListenableBuilder<Map<String, dynamic>>(
+                valueListenable: progress,
+                builder: (_, p, __) {
+                  final done = (p['done'] as num?)?.toInt() ?? 0;
+                  final total = (p['total'] as num?)?.toInt() ?? 0;
+                  final current = (p['current'] as String?) ?? '';
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: TextStyle(
+                          color: h.text,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: HSpace.sm),
+                      Text(
+                        total > 0
+                            ? tr('${'$done'} / ${'$total'} 个文件')
+                            : tr('正在统计文件…'),
+                        style: TextStyle(fontSize: 13.5, color: h.textDim),
+                      ),
+                      const SizedBox(height: HSpace.md),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          // total 未知 ⇒ 不定量动画，别假装有 0%
+                          value:
+                              total > 0 ? (done / total).clamp(0.0, 1.0) : null,
+                          minHeight: 6,
+                          backgroundColor: h.surfaceAlt,
+                          color: h.accent,
+                        ),
+                      ),
+                      if (current.isNotEmpty) ...[
+                        const SizedBox(height: HSpace.sm),
+                        Text(
+                          current,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 12, color: h.textDim),
+                        ),
+                      ],
+                      const SizedBox(height: HSpace.md),
+                      Text(
+                        note,
+                        style: TextStyle(
+                            fontSize: 12.5, height: 1.5, color: h.textDim),
+                      ),
+                      if (onCancel != null) ...[
+                        const SizedBox(height: HSpace.md),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: onCancel,
+                            child: Text(cancelLabel ?? tr('取消')),
+                          ),
+                        ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    ));
+
+    try {
+      return await run();
+    } finally {
+      await sub.cancel();
+      // 先关抽屉再让 notifier 自然回收（不 dispose：ValueListenableBuilder
+      // 可能还在出栈动画里读最后一眼，dispose 早了会抛 "used after dispose"）
+      final ctx2 = sheetCtx;
+      if (ctx2 != null && ctx2.mounted) Navigator.of(ctx2).pop();
+    }
+  }
+
+  /// **把刚选的文件夹复制进 App 私有目录**（2026-11-04），带进度与取消。
+  ///
+  /// ## 为什么要这一步
+  ///
+  /// SAF 只给 `content://` 授权，不是文件系统权限：Flutter 的 `File`、沙箱
+  /// （proot Linux）和终端都碰不到它。复制成私有目录里的普通文件夹后，
+  /// 三条链路（App / 沙箱 / 终端）第一次能对**同一个工作区**读写。
+  ///
+  /// 代价必须让用户知道：改的是副本、原文件夹不再同步、卸载 App 连副本一起丢
+  /// ⇒ 所以「导出 zip」是配套的出口（侧边栏工作区菜单）。
+  ///
+  /// @return `true` = 已复制并登记，调用方继续切上下文；`false` = 失败/取消
+  Future<bool> _importPickedWorkspace(Map<String, dynamic> ws) async {
+    final treeUri = (ws['treeUri'] as String?) ?? '';
+    final sourcePath = (ws['path'] as String?) ?? '';
+    final name = (ws['name'] as String?) ?? '';
+
+    final out = await _runTransferWithProgress(
+      title: tr('正在复制到你自己的工作区'),
+      note: tr('复制期间改的是副本；原文件夹不会跟着变。'),
+      progressStream: AgentBridge.importProgress,
+      cancelLabel: tr('取消复制'),
+      onCancel: () => unawaited(_bridge.cancelImport()),
+      run: () => _bridge.importWorkspace(
+        treeUri: treeUri,
+        sourcePath: sourcePath,
+        name: name,
+      ),
+    );
+
+    if (out['ok'] == false) {
+      final err = (out['error'] as String?) ?? tr('未知原因');
+      final cancelled = err.contains('已取消');
+      if (mounted && !cancelled) {
+        setState(() => _error = tr('复制工作区失败：$err'));
+      }
+      return false;
+    }
+    return true;
+  }
+
+  /// **把工作区打包成 zip 导出**（2026-11-04）。
+  ///
+  /// 工作区在 App 私有目录里是副本，卸载 App 就没了。这是让用户把东西
+  /// **拿回去**的出口：打成 zip 落在 `<externalFilesDir>/exports/`，用户
+  /// 用系统的文件管理就能拷走（该目录对同一 App 签名之外不可见，但对
+  /// 「文件」App 可见）。
+  ///
+  /// 失败如实说，不假装成功：宿主回的 `{ok:false, error}` 直接进提示。
+  Future<void> _exportWorkspaceZip(String workspaceId) async {
+    HWorkspace? ws;
+    for (final w in _workspaces) {
+      if (w.id == workspaceId) ws = w;
+    }
+    if (ws == null) return;
+    final target = ws;
+    try {
+      final out = await _runTransferWithProgress(
+        title: tr('正在打包为 zip'),
+        note: tr('打包的是这个工作区的副本，原文件夹不动。'),
+        progressStream: AgentBridge.exportProgress,
+        run: () => _bridge.exportWorkspaceZip(
+          path: target.path,
+          name: target.name,
+        ),
+      );
+      if (!mounted) return;
+      if (out['ok'] == false) {
+        final err = (out['error'] as String?) ?? tr('未知原因');
+        setState(() => _error = tr('导出失败：$err'));
+        return;
+      }
+      final zipPath = (out['zipPath'] as String?) ?? '';
+      final files = (out['files'] as num?)?.toInt() ?? 0;
+      showIosToast(
+        context,
+        zipPath.isEmpty
+            ? tr('已打包（$files 个文件）')
+            : tr('已打包 $files 个文件\n$zipPath'),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = tr('导出失败：$e'));
     }
   }
 
@@ -2106,6 +2328,10 @@ class _ChatScreenState extends State<ChatScreen> {
               id: id,
               tool: (m['tool'] as String?) ?? tr('未知工具'),
               args: args,
+              // ★ 时间从记录里恢复（2026-11-23）：落盘的 `ts` 与实时路径
+              //   同一口径（epoch 毫秒）⇒ 重开会话时行尾时间不变。
+              //   老记录没有 `ts` ⇒ null ⇒ 不画（不编一个"现在"）。
+              atMs: (m['ts'] as num?)?.toInt(),
               result: m['result'] as String?,
               status: state != null
                   // 新记录：只认 state
@@ -2209,6 +2435,9 @@ class _ChatScreenState extends State<ChatScreen> {
             finished: true,
             status: (m['stage'] as String?) ?? StepStage.ok.wire,
             durationMs: (m['ms'] as num?)?.toInt(),
+            // ★ 时间从记录恢复（2026-11-23）：`ts` 是收口时刻，
+            //   与实时路径同一口径 ⇒ 重开会话行尾时间不变。
+            atMs: (m['ts'] as num?)?.toInt(),
             // ★ 落盘时被上限截断过 —— 如实告知，不假装完整
             truncated: (m['truncated'] as bool?) == true,
           ));
@@ -2785,6 +3014,8 @@ class _ChatScreenState extends State<ChatScreen> {
       id: id,
       stepId: stepId,
       title: title ?? (index != null ? '正在生成…（第 $index 轮）' : '正在生成…'),
+      // 行尾时间（2026-11-23）：进行中显示**开始**时刻，结束后换成收口时刻
+      atMs: DateTime.now().millisecondsSinceEpoch,
     ));
     return id;
   }
@@ -2840,6 +3071,9 @@ class _ChatScreenState extends State<ChatScreen> {
         finished: true,
         status: e.status,
         durationMs: e.durationMs,
+        // 收口时刻：标题变过去式（「读取了…」），时间跟着结束走，
+        // 与工具行同一口径，回看时能排出先后顺序
+        atMs: DateTime.now().millisecondsSinceEpoch,
       );
     });
     _streamStepIds.remove(stepId);
@@ -3172,6 +3406,8 @@ class _ChatScreenState extends State<ChatScreen> {
             tool: tool,
             args: e.args ?? const {},
             status: ToolStatus.running,
+            // 发起时刻（行尾时间；结束时会被改成收口时刻，见 kToolFinished）
+            atMs: DateTime.now().millisecondsSinceEpoch,
             // 「完全展开」档位：把这一轮的模型原话挂到卡片上
             rawOutput: _pendingRaw.remove(e.index ?? -1),
               // ★ 2026-10-29：执行面（预判）——卡片标题据此写「在沙箱/在手机执行」
@@ -3200,6 +3436,8 @@ class _ChatScreenState extends State<ChatScreen> {
               surface: e.surface,
               exitCode: e.exitCode,
               command: e.command,
+              // 收口时刻（标题是过去式「读取了…」，时间跟着结束走）
+              atMs: DateTime.now().millisecondsSinceEpoch,
               );
             }
           }
@@ -3595,6 +3833,9 @@ class _ChatScreenState extends State<ChatScreen> {
         _messages[i] = cur.copyWith(
           finished: true,
           status: failed ? AgentEvent.kStatusError : AgentEvent.kStatusOk,
+          // 孤儿步骤被 UI 强制收口：时间也换成收口这一刻（不留"进行中"的
+          // 起点时间挂在一条已结束的行上，那会自相矛盾）
+          atMs: DateTime.now().millisecondsSinceEpoch,
         );
       }
     });
@@ -5129,6 +5370,8 @@ class _ChatScreenState extends State<ChatScreen> {
                     status: t.toolSucceeded
                         ? ToolStatus.success
                         : ToolStatus.failure,
+                    // 兜底纠正也算收口：时间随之落到这一刻
+                    atMs: DateTime.now().millisecondsSinceEpoch,
                   );
                 }
               }
@@ -5141,6 +5384,8 @@ class _ChatScreenState extends State<ChatScreen> {
               result: t.result,
               // ★ 同上：结构化的 toolSucceeded 是唯一权威
               status: t.toolSucceeded ? ToolStatus.success : ToolStatus.failure,
+              // 兜底补齐发生在收尾时 ⇒ 时间取这一刻（不为它编一个更早的时刻）
+              atMs: DateTime.now().millisecondsSinceEpoch,
             ));
           }
           if (result.finalText.isNotEmpty) {
@@ -5476,6 +5721,7 @@ class _ChatScreenState extends State<ChatScreen> {
         //   两个入口互不兜底：一个选用户自己的项目，一个进能构建的内置目录。
         onAddAppWorkspace: _addAppWorkspace,
         onRemoveWorkspace: _removeWorkspace,
+        onExportWorkspaceZip: _exportWorkspaceZip,
         onOpenWorkspaceFolder: _openWorkspaceFolder,
         onRenameSession: _renameSession,
         onDeleteSession: _deleteSession,

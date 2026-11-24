@@ -104,3 +104,10 @@ video/
 
 # 2026-10-27：AI 助手（WorkBuddy）的本地工作记忆目录 —— 本机私有，不进仓库
 .workbuddy-ai/
+
+# Hefesto: lo que no debe subir a GitHub
+.DS_Store
+Thumbs.db
+*.tmp
+.agent/
+.papelera/

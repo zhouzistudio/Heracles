@@ -108,6 +108,16 @@ class MainActivity : FlutterActivity() {
     private lateinit var voiceRecorder: VoiceRecorder
     private lateinit var folderPicker: FolderPickerBridge
 
+    /**
+     * ★ 2026-11-04：把用户选的文件夹**复制进私有目录**（可写 + 沙箱可见），
+     * 以及反向把私有副本**导出成 zip**。
+     *
+     * 为什么放在 Activity 而不是 [DeviceChannel]：它要用 `getExternalFilesDir`
+     * 和 `contentResolver`，跟"工作区登记表"是一体的，而 DeviceChannel 的
+     * 契约只讲设备能力（fs/shell/权限），不该混进工作区生命周期。
+     */
+    private lateinit var importer: WorkspaceImporter
+
     /** ★ V0.4 F1（2026-11-02）：技能目录的文件系统操作（**不解析** front-matter）。 */
     private lateinit var skillsBridge: SkillsBridge
 
@@ -295,6 +305,7 @@ class MainActivity : FlutterActivity() {
         cameraBridge = CameraBridge(this)
         voiceRecorder = VoiceRecorder(this)
         folderPicker = FolderPickerBridge(this)
+        importer = WorkspaceImporter(ctx, registry)
 
         // ★ V0.4 F1/F3（2026-11-02）：技能目录 + MCP 配置（都是"只有宿主能做"的重活）
         skillsBridge = SkillsBridge(ctx)
@@ -372,6 +383,13 @@ class MainActivity : FlutterActivity() {
             "listWorkspaces" -> handleListWorkspaces(result)
             "removeWorkspace" -> handleRemoveWorkspace(call, result)
             "ensureAppWorkspace" -> handleEnsureAppWorkspace(result)
+            // ---- ★ 2026-11-04：复制进私有目录 / 导出 zip（只增方法）----
+            "importWorkspace" -> handleImportWorkspace(call, result)
+            "cancelWorkspaceImport" -> {
+                importer.cancel()
+                reply(result, true)
+            }
+            "exportWorkspaceZip" -> handleExportWorkspaceZip(call, result)
 
             // ---- 文件 ----
             "pickFiles" -> handlePickFiles(call, result)
@@ -768,6 +786,113 @@ otify_user 工具的宿主实现，2026-11-02）。
             // 兼容旧契约：成功时回的**就是工作区条目本身**（不带 ok 包装）
             reply(result, ws)
         }
+    }
+
+    // ------------------------------------------- 复制进私有目录 / 导出 zip（2026-11-04）
+
+    /**
+     * 把用户选的文件夹复制到私有目录并登记成工作区。
+     *
+     * ## 入参（**只增**）
+     * ```
+     * {treeUri: String, sourcePath: String, name: String, dropSource: Boolean}
+     * ```
+     * - `treeUri` —— 选择器给的那张授权（唯一能读原文件夹的凭证）
+     * - `sourcePath` —— 原文件夹的 POSIX 路径（只为生成目录名 hash 与"复制自"记录）
+     * - `dropSource` —— 默认 true：复制成功后把**原文件夹那条登记**删掉，
+     *   否则侧边栏会出现"原目录 + 副本"两个工作区，用户不知道往哪个里干活。
+     *
+     * ## 为什么整件事在 `scope` 里跑而不是 `processScope`
+     *
+     * 复制可能几十秒，期间 Activity 被系统回收的概率不为零；但**回收了就没人等结果**，
+     * 与其在进程级悄悄复制完、回来发现 UI 不知道，不如老老实实失败一次
+     * （回 `ok:false`，用户再点一次）。**已删掉的半成品目录**保证不会留垃圾。
+     */
+    private fun handleImportWorkspace(call: MethodCall, result: MethodChannel.Result) {
+        val treeUri = call.argument<String>("treeUri").orEmpty()
+        val sourcePath = call.argument<String>("sourcePath").orEmpty()
+        val name = call.argument<String>("name").orEmpty()
+        val dropSource = call.argument<Boolean>("dropSource") ?: true
+        if (treeUri.isBlank()) {
+            reply(result, mapOf("ok" to false, "error" to "没有拿到文件夹授权，请重新选一次"))
+            return
+        }
+        scope.launch {
+            val out = importer.importFolder(
+                treeUri = treeUri,
+                displayName = name,
+                sourcePath = sourcePath,
+            ) { done, total, current ->
+                pushToDart(
+                    "workspaceImportProgress",
+                    mapOf("done" to done, "total" to total, "current" to current),
+                )
+            }
+            if (out["ok"] == true) {
+                val destPath = out["path"] as? String ?: ""
+                val entry = withContext(Dispatchers.IO) {
+                    registry.add(
+                        path = destPath,
+                        name = name.ifBlank { File(destPath).name },
+                        treeUri = "",
+                        sourcePath = sourcePath,
+                    )
+                }
+                if (entry == null) {
+                    reply(
+                        result,
+                        mapOf("ok" to false, "error" to "复制完成但登记失败：$destPath"),
+                    )
+                    return@launch
+                }
+                if (dropSource && sourcePath.isNotBlank()) {
+                    withContext(Dispatchers.IO) { registry.remove(sourcePath) }
+                }
+                reply(result, entry)
+            } else {
+                reply(result, out)
+            }
+        }
+    }
+
+    /**
+     * 把工作区打包成 zip，落在 `<externalFilesDir>/exports/`。
+     *
+     * 入参 `{path: String, name: String}`；成功回
+     * `{ok:true, zipPath, name, files, bytes}`（**带 ok**，与 import 一致），
+     * 失败回 `{ok:false, error}`。
+     */
+    private fun handleExportWorkspaceZip(call: MethodCall, result: MethodChannel.Result) {
+        val path = call.argument<String>("path").orEmpty()
+        val name = call.argument<String>("name").orEmpty()
+        if (path.isBlank()) {
+            reply(result, mapOf("ok" to false, "error" to "没有指定工作区"))
+            return
+        }
+        scope.launch {
+            val out = importer.exportZip(
+                workspacePath = path,
+                displayName = name,
+            ) { done, total, current ->
+                pushToDart(
+                    "workspaceExportProgress",
+                    mapOf("done" to done, "total" to total, "current" to current),
+                )
+            }
+            reply(result, out)
+        }
+    }
+
+    /**
+     * 往 Dart 推一条事件。
+     *
+     * 用 [liveCommandChannel]（**重建后的新引擎**）优先，回落到本次实例的
+     * [commandChannel]：复制/导出期间 Activity 重建时，发起方拿到的那份已经失效。
+     * 推不出去就静默 —— 进度条不该成为失败原因。
+     */
+    private fun pushToDart(method: String, payload: Map<String, Any?>) {
+        val ch = liveCommandChannel ?: commandChannel
+        mainHandler.post { runCatching { ch?.invokeMethod(method, payload) } }
     }
 
     // ------------------------------------------------------------ 文件

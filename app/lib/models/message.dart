@@ -140,12 +140,24 @@ class HToolCall extends HMessage {
     this.surface,
     this.exitCode,
     this.command,
+    this.atMs,
   });
 
   @override
   final String id;
   final String tool;
   final Map<String, String> args;
+
+  /// **这一次调用的墙钟时刻**（epoch 毫秒）—— 列表行右侧显示 `11.23 12:10`。
+  ///
+  /// ## 为什么它有、以及为什么可以缺
+  ///
+  /// 用户要求（2026-11-23）：每个动作后面带上"当时几点几分"，回看时才知道
+  /// 一串工具行各自发生在什么时候。实时路径用 `DateTime.now()` 打点，
+  /// 历史回放用落盘记录里现成的 `ts`（同一口径：epoch 毫秒）。
+  /// `null` = 这条来自没有 `ts` 的老记录 / 兜底路径 ⇒ **不画时间**，
+  /// 也不拿"现在"去顶替（那是伪造）。
+  final int? atMs;
 
   /// 执行结果；null 表示还在跑
   final String? result;
@@ -188,6 +200,7 @@ class HToolCall extends HMessage {
     String? surface,
     int? exitCode,
     String? command,
+    int? atMs,
   }) =>
       HToolCall(
         id: id,
@@ -199,6 +212,7 @@ class HToolCall extends HMessage {
         surface: surface ?? this.surface,
         exitCode: exitCode ?? this.exitCode,
         command: command ?? this.command,
+        atMs: atMs ?? this.atMs,
       );
 }
 
@@ -243,10 +257,24 @@ class HStepStream extends HMessage {
     this.durationMs,
     this.truncated = false,
     this.bodyCollapsed = false,
+    this.atMs,
   });
 
   @override
   final String id;
+
+  /// **这一行的墙钟时刻**（epoch 毫秒）—— 标题行右侧显示 `11.23 12:10`。
+  ///
+  /// 用户要求（2026-11-23）：「每次操作在对话后面加上当前的时间」。
+  /// 语义按**步骤的时态**走，不新增第二个字段，避免出现两个时间互相矛盾：
+  ///
+  /// · 进行中 ⇒ 步骤**开始**的时刻（`step_started` / 补建那一刻）
+  /// · 已结束 ⇒ 步骤**收口**的时刻（`step_ended` 到达那一刻）
+  ///
+  /// 历史回放用落盘记录里现成的 `ts`（`local_agent.buildStepRow` 写的，
+  /// 就是收口时刻，epoch 毫秒，同一口径）。`null` = 老记录没有 `ts`
+  /// ⇒ 不画时间，**不拿"现在"顶替**。
+  final int? atMs;
 
   /// Kotlin 侧的步骤标识（`turn-3`）—— 增量按它归属
   final String stepId;
@@ -339,6 +367,7 @@ class HStepStream extends HMessage {
     int? durationMs,
     bool? truncated,
     bool? bodyCollapsed,
+    int? atMs,
   }) =>
       HStepStream(
         id: id,
@@ -352,7 +381,25 @@ class HStepStream extends HMessage {
         durationMs: durationMs ?? this.durationMs,
         truncated: truncated ?? this.truncated,
         bodyCollapsed: bodyCollapsed ?? this.bodyCollapsed,
+        atMs: atMs ?? this.atMs,
       );
+}
+
+/// **动作行的墙钟时间文案** —— `11.23 12:10`（月.日 时:分）。
+///
+/// ## 为什么是「月.日 时:分」而不是只有「时:分」
+///
+/// 用户给的样例就是 `(11.23 12:10)`。会话是**长期数据**：一天之后再看
+/// 只看 `12:10` 会以为"今天中午"，加上月.日才不歧义。年份不写 ——
+/// 会话不会跨年读，多这一截只是噪音。
+///
+/// `null` / 非法值（≤0）⇒ 返回空串，调用方据此**不画**。
+/// 不返回"现在" —— 那是伪造时间，比没有更糟。
+String hClockLabel(int? epochMs) {
+  if (epochMs == null || epochMs <= 0) return '';
+  final t = DateTime.fromMillisecondsSinceEpoch(epochMs);
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${t.month}.${two(t.day)} ${two(t.hour)}:${two(t.minute)}';
 }
 
 /// 步骤三态（**不是布尔**）。

@@ -891,6 +891,9 @@ class _ToolCallCardState extends State<ToolCallCard> {
     // 命令类工具（沙箱 / 手机 Shell）走专门的标题行文案与双层卡。
     final surface = commandSurfaceOf(call);
 
+    // 行尾时间（2026-11-23）：进行中 = 发起时刻，结束 = 收口时刻
+    final clock = hClockLabel(call.atMs);
+
     return Container(
       margin: const EdgeInsets.only(bottom: HSpace.xs),
       // ★ 命令卡（2026-10-29 规格）：卡片本身就是最外层 —— 展开时外层
@@ -926,7 +929,12 @@ class _ToolCallCardState extends State<ToolCallCard> {
                     // 状态图标直接顶到左列，全行左对齐）
                     Icon(icon, size: kStepRowStatusSize, color: color),
                     const SizedBox(width: kStepRowStatusGap),
-                    Flexible(
+                    // ★ 2026-11-23：`Flexible` → `Expanded`。
+                    //   行尾多了时间之后，标题只占它需要的宽度会把时间
+                    //   挤到标题右边、长短不一 ⇒ 一串动作的时间对不成一列
+                    //   （步骤行那边有 `Spacer` 顶到最右，两行要一致）。
+                    //   标题的省略行为不变：仍是"最多到可用宽度"。
+                    Expanded(
                       child: Text(
                         // ★ 2026-10-22：`动词 + 目标`（对齐参考界面）
                         //   `读取 app/lib/services/local_agent.dart`
@@ -982,6 +990,21 @@ class _ToolCallCardState extends State<ToolCallCard> {
                           fontSize: 10.5,
                           fontWeight: FontWeight.w600,
                           color: HColors.errorOn(h.dark),
+                        ),
+                      ),
+                    ],
+                    // ★ 行尾时间（2026-11-23 用户要求：「每次操作在对话后面
+                    //   加上当前的时间」）：`11.23 12:10`，与步骤行同一位置、
+                    //   同一字号。空 = 老记录没存时间 ⇒ 不画（不编一个"现在"）。
+                    if (clock.isNotEmpty) ...[
+                      const SizedBox(width: HSpace.sm),
+                      Text(
+                        clock,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          color: h.textFaint,
+                          // 等宽数字：一串动作的时间能对齐成一列
+                          fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
                     ],
