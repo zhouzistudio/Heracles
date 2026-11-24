@@ -142,7 +142,8 @@ abstract final class AppIcons {
   static const pause = CupertinoIcons.pause;
   static const download = CupertinoIcons.arrow_down_circle;
   static const upload = CupertinoIcons.arrow_up_circle;
-  static const more = CupertinoIcons.ellipsis;
+  // `more` 已在「顶栏 / 导航」声明（107 行）；这里重复声明会让编译器报
+  // 「'more' is already declared in this scope」而整个 kernel snapshot 挂掉。
   static const moreCompact = CupertinoIcons.ellipsis_circle;
 }
 
